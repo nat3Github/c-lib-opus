@@ -1,7 +1,8 @@
 const std = @import("std");
 
-// ponytail: float build, no custom modes, no DNN extras (deep-plc/dred/osce), SIMD picked at
-// compile time from the target CPU features (opus "PRESUME" mode, no runtime CPU detection).
+// ponytail: float build, no custom modes, no DNN extras (deep-plc/dred/osce). SIMD: ARM and x86
+// SSE/SSE2 fixed at compile time from the target CPU features (opus "PRESUME" mode); x86
+// SSE4.1/AVX2 use runtime CPU detection when the target lacks them.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -32,13 +33,17 @@ pub fn build(b: *std.Build) void {
                 presume(mod, "OPUS_X86", "SSE2");
                 mod.addCSourceFiles(.{ .files = &celt_sse2_sources });
             }
-            if (has(f, .sse4_1)) {
-                presume(mod, "OPUS_X86", "SSE4_1");
-                mod.addCSourceFiles(.{ .files = &(celt_sse4_1_sources ++ silk_sse4_1_sources) });
-            }
-            if (has(f, .avx2) and has(f, .fma)) {
-                presume(mod, "OPUS_X86", "AVX2");
-                mod.addCSourceFiles(.{ .files = &(celt_avx2_sources ++ silk_avx2_sources ++ silk_float_avx2_sources) });
+            // SSE4.1/AVX2: built with per-file CPU flags, picked at runtime (opus RTCD) unless the
+            // target already has them.
+            const rtcd = !has(f, .sse4_1) or !(has(f, .avx2) and has(f, .fma));
+            if (has(f, .sse4_1)) presume(mod, "OPUS_X86", "SSE4_1") else mod.addCMacro("OPUS_X86_MAY_HAVE_SSE4_1", "1");
+            if (has(f, .avx2) and has(f, .fma)) presume(mod, "OPUS_X86", "AVX2") else mod.addCMacro("OPUS_X86_MAY_HAVE_AVX2", "1");
+            mod.addCSourceFiles(.{ .files = &(celt_sse4_1_sources ++ silk_sse4_1_sources), .flags = features(&.{ "sse3", "ssse3", "sse4.1" }) });
+            mod.addCSourceFiles(.{ .files = &(celt_avx2_sources ++ silk_avx2_sources ++ silk_float_avx2_sources), .flags = features(&.{ "sse3", "ssse3", "sse4.1", "sse4.2", "avx", "avx2", "fma" }) });
+            if (rtcd) {
+                mod.addCMacro("OPUS_HAVE_RTCD", "1");
+                mod.addCMacro("CPU_INFO_BY_C", "1"); // <cpuid.h>; MSVC ABI uses <intrin.h> via _MSC_VER
+                mod.addCSourceFiles(.{ .files = &.{ "celt/x86/x86cpu.c", "celt/x86/x86_celt_map.c", "silk/x86/x86_silk_map.c" } });
             }
         },
         .arm, .aarch64 => if (std.Target.arm.featureSetHas(t.cpu.features, .neon) or
@@ -55,6 +60,13 @@ pub fn build(b: *std.Build) void {
     const lib = b.addLibrary(.{ .name = "opus", .root_module = mod });
     lib.installHeadersDirectory(b.path("include"), "", .{ .include_extensions = &.{".h"} });
     b.installArtifact(lib);
+}
+
+// -m<feature> per file is overridden by the module's own CPU flags; cc1 target features are kept.
+fn features(comptime names: []const []const u8) []const []const u8 {
+    comptime var flags: []const []const u8 = &.{};
+    inline for (names) |n| flags = flags ++ &[_][]const u8{ "-Xclang", "-target-feature", "-Xclang", "+" ++ n };
+    return flags;
 }
 
 fn presume(mod: *std.Build.Module, comptime prefix: []const u8, comptime name: []const u8) void {
