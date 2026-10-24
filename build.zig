@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
             std.Target.aarch64.featureSetHas(t.cpu.features, .neon))
         {
             presume(mod, "OPUS_ARM", "NEON_INTR");
-            if (t.cpu.arch == .aarch64) presume(mod, "OPUS_X86", "AARCH64_NEON_INTR");
+            if (t.cpu.arch == .aarch64) presume(mod, "OPUS_ARM", "AARCH64_NEON_INTR");
             // includes aarch64 .S files, which are guarded by __aarch64__
             mod.addCSourceFiles(.{ .files = &(celt_neon_sources ++ silk_neon_sources) });
         },
